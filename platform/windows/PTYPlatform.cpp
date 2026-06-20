@@ -194,20 +194,46 @@ std::string kryptonResolveShell() {
     return last.substr(lead);
 }
 
+// Widen a UTF-8 std::string into a std::wstring via the Win32 converter.
+// A raw `std::wstring(s.begin(), s.end())` widens byte-by-byte, mangling
+// any multi-byte UTF-8 sequence (so Unicode paths break silently).
+std::wstring utf8ToWide(const std::string& s) {
+    if (s.empty()) return {};
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), nullptr, 0);
+    if (n <= 0) return {};
+    std::wstring out(static_cast<std::size_t>(n), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), static_cast<int>(s.size()), out.data(), n);
+    return out;
+}
+
+// True iff `exe` resolves on the current PATH (and the App-Paths registry
+// fallback that SearchPathW also consults).
+bool exeOnPath(const wchar_t* exe) {
+    wchar_t buf[MAX_PATH] = {0};
+    DWORD got = SearchPathW(nullptr, exe, nullptr, MAX_PATH, buf, nullptr);
+    return got > 0 && got < MAX_PATH;
+}
+
 std::wstring resolveShell(const std::string& shellPath) {
     // Honour an explicit Windows-looking shellPath the caller passed.
     if (looksWindowsPath(shellPath)) {
-        return std::wstring(shellPath.begin(), shellPath.end());
+        return utf8ToWide(shellPath);
     }
 
     // Otherwise consult Krypton if the user has a setup.ks.
     std::string krShell = kryptonResolveShell();
     if (!krShell.empty()) {
-        return std::wstring(krShell.begin(), krShell.end());
+        return utf8ToWide(krShell);
     }
 
-    static const std::string kDefault = "cmd.exe";
-    return std::wstring(kDefault.begin(), kDefault.end());
+    // No explicit preference and no Krypton script — pick the most modern
+    // shell available. Order: PowerShell 7+ (pwsh.exe) → Windows PowerShell
+    // 5.x (powershell.exe, always present on Win10+) → cmd.exe last-resort.
+    // `-NoLogo` skips the multi-line copyright banner PowerShell prints
+    // on launch so the first thing the user sees is a prompt.
+    if (exeOnPath(L"pwsh.exe"))       return L"pwsh.exe -NoLogo";
+    if (exeOnPath(L"powershell.exe")) return L"powershell.exe -NoLogo";
+    return L"cmd.exe";
 }
 
 }  // namespace
